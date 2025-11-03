@@ -179,85 +179,196 @@
 // }
 
 
+// #include <iostream>
+// #include <fstream>
+// #include <cstring>
+// #include <unistd.h>
+// #include <sys/socket.h>
+// #include <arpa/inet.h>
+
+// using namespace std;
+
+// #define SERVER_IP "192.168.177.129"  // 服务端IP
+// #define PORT 8080  // 服务端端口
+
+// void send_file(int server_socket, const string &filename) {
+//     ifstream infile(filename, ios::binary);
+//     if (!infile) {
+//         cout << "❌ Error opening file for reading: " << filename << endl;
+//         return;
+//     }
+
+//     // === Step 1. 发送文件名长度 ===
+//     int name_len = filename.size();
+//     send(server_socket, &name_len, sizeof(name_len), 0);
+
+//     // === Step 2. 发送文件名 ===
+//     send(server_socket, filename.c_str(), name_len, 0);
+
+//     // === Step 3. 获取文件大小 ===
+//     infile.seekg(0, ios::end);
+//     long long file_size = infile.tellg();
+//     infile.seekg(0, ios::beg);
+
+//     // === Step 4. 发送文件大小 ===
+//     send(server_socket, &file_size, sizeof(file_size), 0);
+
+//     // === Step 5. 发送文件内容 ===
+//     char buffer[1024];
+//     long long total_sent = 0;
+//     while (infile.read(buffer, sizeof(buffer))) {
+//         send(server_socket, buffer, infile.gcount(), 0);
+//         total_sent += infile.gcount();
+//     }
+//     if (infile.gcount() > 0) {
+//         send(server_socket, buffer, infile.gcount(), 0);
+//         total_sent += infile.gcount();
+//     }
+
+//     infile.close();
+
+//     cout << "✅ File sent successfully: " << filename
+//          << " (" << total_sent << " bytes)" << endl;
+// }
+
+// int main() {
+//     int client_socket;
+//     struct sockaddr_in server_addr;
+
+//     // === Step 1. 创建 socket ===
+//     if ((client_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+//         perror("Socket creation failed");
+//         return -1;
+//     }
+
+//     server_addr.sin_family = AF_INET;
+//     server_addr.sin_port = htons(PORT);
+//     server_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
+
+//     // === Step 2. 连接服务端 ===
+//     if (connect(client_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+//         perror("Connection failed");
+//         close(client_socket);
+//         return -1;
+//     }
+
+//     cout << "Enter the file name to send: ";
+//     string filename;
+//     cin >> filename;
+
+//     send_file(client_socket, filename);
+
+//     close(client_socket);
+//     return 0;
+// }
+
+
+#include <arpa/inet.h>
 #include <iostream>
 #include <fstream>
 #include <cstring>
 #include <unistd.h>
+#include <sys/types.h>
 #include <sys/socket.h>
-#include <arpa/inet.h>
 
-using namespace std;
+#define SERVER_IP "192.168.177.129"  // 服务端 IP
+#define PORT 8080                    // 服务端端口
 
-#define SERVER_IP "192.168.177.129"  // 服务端IP
-#define PORT 8080  // 服务端端口
+static uint64_t htonll(uint64_t x) {
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    return ((uint64_t)htonl((uint32_t)(x & 0xFFFFFFFFULL)) << 32) |
+           htonl((uint32_t)(x >> 32));
+#else
+    return x;
+#endif
+}
 
-void send_file(int server_socket, const string &filename) {
-    ifstream infile(filename, ios::binary);
+static uint64_t ntohll(uint64_t x) {
+    return htonll(x);
+}
+
+// 发送文件数据的函数
+bool send_file(int sock, const std::string& filename) {
+    // 打开文件
+    std::ifstream infile(filename, std::ios::binary);
     if (!infile) {
-        cout << "❌ Error opening file for reading: " << filename << endl;
-        return;
+        std::cerr << "Error opening file: " << filename << "\n";
+        return false;
     }
 
-    // === Step 1. 发送文件名长度 ===
-    int name_len = filename.size();
-    send(server_socket, &name_len, sizeof(name_len), 0);
-
-    // === Step 2. 发送文件名 ===
-    send(server_socket, filename.c_str(), name_len, 0);
-
-    // === Step 3. 获取文件大小 ===
-    infile.seekg(0, ios::end);
-    long long file_size = infile.tellg();
-    infile.seekg(0, ios::beg);
-
-    // === Step 4. 发送文件大小 ===
-    send(server_socket, &file_size, sizeof(file_size), 0);
-
-    // === Step 5. 发送文件内容 ===
-    char buffer[1024];
-    long long total_sent = 0;
-    while (infile.read(buffer, sizeof(buffer))) {
-        send(server_socket, buffer, infile.gcount(), 0);
-        total_sent += infile.gcount();
-    }
-    if (infile.gcount() > 0) {
-        send(server_socket, buffer, infile.gcount(), 0);
-        total_sent += infile.gcount();
+    // 1) 发送文件名长度（网络序）
+    uint32_t name_len = filename.size();
+    uint32_t name_len_net = htonl(name_len);  // 转换为网络字节序
+    if (write(sock, &name_len_net, sizeof(name_len_net)) != sizeof(name_len_net)) {
+        std::cerr << "Failed to send filename length\n";
+        return false;
     }
 
-    infile.close();
+    // 2) 发送文件名
+    if (write(sock, filename.c_str(), name_len) != name_len) {
+        std::cerr << "Failed to send filename\n";
+        return false;
+    }
 
-    cout << "✅ File sent successfully: " << filename
-         << " (" << total_sent << " bytes)" << endl;
+    // 3) 发送文件大小（网络序）
+    infile.seekg(0, std::ios::end);
+    uint64_t fsize = infile.tellg();
+    uint64_t fsize_net = htonll(fsize);  // 转换为网络字节序
+    if (write(sock, &fsize_net, sizeof(fsize_net)) != sizeof(fsize_net)) {
+        std::cerr << "Failed to send file size\n";
+        return false;
+    }
+
+    // 4) 发送文件内容
+    infile.seekg(0, std::ios::beg);  // 重置文件读取位置
+    const size_t BUF_SZ = 64 * 1024;
+    char buf[BUF_SZ];
+    while (!infile.eof()) {
+        infile.read(buf, BUF_SZ);
+        size_t bytes_read = infile.gcount();  // 实际读取的字节数
+        if (write(sock, buf, bytes_read) != bytes_read) {
+            std::cerr << "Failed to send file content\n";
+            return false;
+        }
+    }
+
+    std::cout << "File sent successfully: " << filename << "\n";
+    return true;
 }
 
 int main() {
-    int client_socket;
-    struct sockaddr_in server_addr;
-
-    // === Step 1. 创建 socket ===
-    if ((client_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        perror("Socket creation failed");
-        return -1;
+    // 创建 socket
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == -1) {
+        perror("socket");
+        return 1;
     }
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-    server_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
+    sockaddr_in server{};
+    server.sin_family = AF_INET;
+    server.sin_port = htons(PORT);
+    inet_pton(AF_INET, SERVER_IP, &server.sin_addr);  // 服务端的 IP 地址
 
-    // === Step 2. 连接服务端 ===
-    if (connect(client_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
-        perror("Connection failed");
-        close(client_socket);
-        return -1;
+    // 连接到服务端
+    if (connect(sock, (sockaddr*)&server, sizeof(server)) == -1) {
+        perror("connect");
+        return 1;
     }
 
-    cout << "Enter the file name to send: ";
-    string filename;
-    cin >> filename;
+    std::cout << "Connected to server at " << SERVER_IP << ":" << PORT << "\n";
 
-    send_file(client_socket, filename);
+    // 输入文件名并发送
+    std::string filename;
+    std::cout << "Enter the file name to send: ";
+    std::getline(std::cin, filename);
 
-    close(client_socket);
+    if (!send_file(sock, filename)) {
+        std::cerr << "File transmission failed\n";
+        close(sock);
+        return 1;
+    }
+
+    // 关闭连接
+    close(sock);
     return 0;
 }
